@@ -270,7 +270,10 @@ class TaskProvider with ChangeNotifier {
   }
 
   List<Task> getTasksForDay(DateTime day) {
-    return _tasks.where((task) => isSameDay(task.date, day)).toList();
+    return _tasks
+        .where((task) => isSameDay(task.date, day))
+        .toList()
+      ..sort((a, b) => a.date.compareTo(b.date));
   }
 
   Future<void> fetchTasks() async {
@@ -305,6 +308,20 @@ class TaskProvider with ChangeNotifier {
     } catch (e) {
       task.isCompleted = originalStatus; // Revert on failure
       notifyListeners();
+    }
+  }
+
+  Future<void> updateTask(Task task) async {
+    final index = _tasks.indexWhere((t) => t.id == task.id);
+    if (index != -1) {
+      _tasks[index] = task;
+      notifyListeners(); // Optimistic update
+      try {
+        await _auth.apiService.updateTask(task.id!, task);
+      } catch (e) {
+        debugPrint(e.toString());
+        fetchTasks(); // Re-fetch on failure
+      }
     }
   }
 
@@ -802,6 +819,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       return Card(
                         margin: const EdgeInsets.only(bottom: 12),
                         child: ListTile(
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => EditTaskScreen(task: task),
+                            ),
+                          ),
                           leading: Checkbox(
                             value: task.isCompleted,
                             activeColor: Theme.of(
@@ -821,12 +844,23 @@ class _HomeScreenState extends State<HomeScreen> {
                                   : Colors.white,
                             ),
                           ),
-                          subtitle: task.description.isNotEmpty
-                              ? Text(
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                DateFormat('HH:mm').format(task.date),
+                                style: const TextStyle(
+                                  color: Color(0xFF38BDF8),
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              if (task.description.isNotEmpty)
+                                Text(
                                   task.description,
                                   style: const TextStyle(color: Colors.grey),
-                                )
-                              : null,
+                                ),
+                            ],
+                          ),
                           trailing: IconButton(
                             icon: const Icon(
                               Icons.delete_outline,
@@ -1073,7 +1107,31 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
       firstDate: DateTime(2020),
       lastDate: DateTime(2030),
     );
-    if (date != null) setState(() => _taskDate = date);
+    if (date != null) {
+      setState(() => _taskDate = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        _taskDate.hour,
+        _taskDate.minute,
+      ));
+    }
+  }
+
+  Future<void> _pickTime() async {
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_taskDate),
+    );
+    if (time != null) {
+      setState(() => _taskDate = DateTime(
+        _taskDate.year,
+        _taskDate.month,
+        _taskDate.day,
+        time.hour,
+        time.minute,
+      ));
+    }
   }
 
   void _submit() {
@@ -1124,6 +1182,18 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
               ),
               onTap: _pickDate,
             ),
+            const SizedBox(height: 16),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                "Time: ${DateFormat('HH:mm').format(_taskDate)}",
+              ),
+              trailing: const Icon(
+                Icons.access_time,
+                color: Color(0xFF38BDF8),
+              ),
+              onTap: _pickTime,
+            ),
             const Spacer(),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -1136,6 +1206,158 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
               onPressed: _submit,
               child: const Text(
                 "Create Task",
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class EditTaskScreen extends StatefulWidget {
+  final Task task;
+  const EditTaskScreen({Key? key, required this.task}) : super(key: key);
+
+  @override
+  _EditTaskScreenState createState() => _EditTaskScreenState();
+}
+
+class _EditTaskScreenState extends State<EditTaskScreen> {
+  late TextEditingController _titleController;
+  late TextEditingController _descController;
+  late DateTime _taskDate;
+  late bool _isCompleted;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.task.title);
+    _descController = TextEditingController(text: widget.task.description);
+    _taskDate = widget.task.date;
+    _isCompleted = widget.task.isCompleted;
+  }
+
+  Future<void> _pickDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _taskDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+    );
+    if (date != null) {
+      setState(() => _taskDate = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        _taskDate.hour,
+        _taskDate.minute,
+      ));
+    }
+  }
+
+  Future<void> _pickTime() async {
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_taskDate),
+    );
+    if (time != null) {
+      setState(() => _taskDate = DateTime(
+        _taskDate.year,
+        _taskDate.month,
+        _taskDate.day,
+        time.hour,
+        time.minute,
+      ));
+    }
+  }
+
+  void _submit() {
+    if (_titleController.text.isEmpty) return;
+    final updatedTask = Task(
+      id: widget.task.id,
+      title: _titleController.text,
+      description: _descController.text,
+      date: _taskDate,
+      isCompleted: _isCompleted,
+    );
+    Provider.of<TaskProvider>(context, listen: false).updateTask(updatedTask);
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Edit Task")),
+      body: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(
+                labelText: "Task Title",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _descController,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: "Description (Optional)",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 24),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                "Date: ${DateFormat('yyyy-MM-dd').format(_taskDate)}",
+              ),
+              trailing: const Icon(
+                Icons.calendar_month,
+                color: Color(0xFF38BDF8),
+              ),
+              onTap: _pickDate,
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                "Time: ${DateFormat('HH:mm').format(_taskDate)}",
+              ),
+              trailing: const Icon(
+                Icons.access_time,
+                color: Color(0xFF38BDF8),
+              ),
+              onTap: _pickTime,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Checkbox(
+                  value: _isCompleted,
+                  activeColor: Theme.of(context).colorScheme.secondary,
+                  onChanged: (val) => setState(() => _isCompleted = val ?? false),
+                ),
+                const Text("Completed"),
+              ],
+            ),
+            const Spacer(),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              onPressed: _submit,
+              child: const Text(
+                "Update Task",
                 style: TextStyle(color: Colors.white, fontSize: 16),
               ),
             ),
